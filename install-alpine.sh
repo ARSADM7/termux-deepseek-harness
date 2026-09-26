@@ -1,28 +1,26 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/bin/sh
 # =============================================================================
-# dsh-termux-installer
-# 在 Termux (Android) 上一键安装 DeepSeek Harness (@deepseek-ai/dsh)
-# 面向【全新安装的 Termux】：跑完本脚本即可直接使用，无需任何手动步骤。
-# 涵盖：pkg 更新 → 基础工具/编译链/Node → npm 配置与镜像 → common.gypi 补丁
+# dsh-alpine-installer
+# 在 Alpine Linux 上一键安装 DeepSeek Harness (@deepseek-ai/dsh)
+# 面向【全新安装的 Alpine】：跑完本脚本即可直接使用，无需任何手动步骤。
+# 涵盖：apk 更新 → 基础工具/编译链/Node → npm 配置与镜像
 #       → dsh 全局安装（原生模块源码编译）→ sharp wasm 兜底 → 启动包装器
-#       → sdcard 存储授权与默认工作区 → 逐项验证
+#       → 默认工作区配置 → 逐项验证
 #
-# 已解决的关键问题：
-#   - koffi / node-pty 无 android 预编译，需现场编译
-#   - Termux clang 默认 target API 24，statx() 需 API >= 30（-target ...android30）
-#   - node-gyp 在 Termux 上报 android_ndk_path 未定义（common.gypi 补丁）
+# 解决的关键问题：
+#   - koffi / node-pty 无预编译，需现场编译
 #   - npm install-scripts 安全门跳过构建脚本（allow-scripts 放行）
-#   - sharp 无 android-arm64 预编译（@img/sharp-wasm32 WebAssembly 兜底）
+#   - sharp 无预编译（@img/sharp-wasm32 WebAssembly 兜底）
 #   - HMR 插件硬要求 --expose-internals（dsh 启动包装器）
 #
-# 用法： bash install.sh [--skip-upgrade] [--cn]
+# 用法： sh install-alpine.sh [--skip-upgrade] [--cn]
 #        --cn            使用 npmmirror 镜像源（中国大陆网络推荐）
-# 环境： Termux（F-Droid 版），Android 11+，arm64 / armv7
+# 环境： Alpine Linux 3.18+，x86_64 / aarch64 / armv7
 # =============================================================================
 set -euo pipefail
 
 # Ctrl+C / 异常退出时清理临时目录
-SWDIR="$HOME/.dsh-termux-sw"
+SWDIR="$HOME/.dsh-alpine-sw"
 trap 'rm -rf "$SWDIR"' EXIT
 
 START_TS="$(date +%s)"
@@ -44,49 +42,48 @@ warn() { printf '\033[1;33m  ! %s\033[0m\n' "$*"; }
 fail() { printf '\033[1;31m  ✗ %s\033[0m\n' "$*"; }
 
 # ---- 0. 环境预检 --------------------------------------------------------------
-if [ -z "${PREFIX:-}" ]; then
-  echo "错误: 未检测到 Termux 环境（\$PREFIX 为空）。请在手机 Termux 里运行本脚本。"
+if [ "$(id -u)" -eq 0 ]; then
+  warn "检测到 root 用户，建议使用普通用户运行（可用 adduser -D -s /bin/sh user && su - user）"
+fi
+
+# 检测是否为 Alpine
+if [ ! -f /etc/alpine-release ]; then
+  echo "错误: 未检测到 Alpine Linux（/etc/alpine-release 不存在）。"
   exit 1
 fi
 
 ARCH="$(uname -m)"
 case "$ARCH" in
-  aarch64)              TARGET="aarch64-linux-android30" ;;
-  armv7l|armv8l)        TARGET="armv7a-linux-androideabi30" ;;
-  x86_64)               TARGET="x86_64-linux-android30" ;;
-  i686)                 TARGET="i686-linux-android30" ;;
+  x86_64)  TARGET="x86_64" ;;
+  aarch64) TARGET="aarch64" ;;
+  armv7l)  TARGET="armv7" ;;
   *)
-    warn "未知架构 $ARCH，按 arm64 处理，如编译失败请提交 issue"
-    TARGET="aarch64-linux-android30" ;;
+    warn "未知架构 $ARCH，按 x86_64 处理，如编译失败请提交 issue"
+    TARGET="x86_64" ;;
 esac
-log "架构: $ARCH   编译目标: $TARGET"
-
-# 构建很耗时，尽量保持屏幕常亮
-if command -v termux-wake-lock >/dev/null 2>&1; then
-  termux-wake-lock
-fi
+log "架构: $ARCH   目标平台: $TARGET"
 
 # ---- 1. 系统更新与编译工具链 ---------------------------------------------------
 if [ "$SKIP_UPGRADE" -eq 0 ]; then
-  log "pkg update && pkg upgrade（首次运行较久，务必等它完成）"
-  pkg update -y
-  pkg upgrade -y
+  log "apk update && apk upgrade（首次运行较久，务必等它完成）"
+  apk update
+  apk upgrade
 else
-  warn "已跳过 pkg update/upgrade"
+  warn "已跳过 apk update/upgrade"
 fi
 
-log "安装基础工具与编译工具链: git curl cmake clang make python binutils pkg-config libandroid-spawn termux-tools"
-pkg install -y git curl cmake clang make python binutils pkg-config libandroid-spawn termux-tools
+log "安装基础工具与编译工具链: git curl cmake clang make python3 binutils pkgconfig linux-headers build-base"
+apk add --no-cache git curl cmake clang make python3 binutils pkgconfig linux-headers build-base
 
 # ---- 2. Node.js >= 22.12（dsh 依赖 commander 15 的硬性要求）-------------------
 if ! command -v node >/dev/null 2>&1; then
-  log "安装 nodejs"
-  pkg install -y nodejs
+  log "安装 nodejs npm"
+  apk add --no-cache nodejs npm
 fi
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 NODE_MINOR="$(node -p 'process.versions.node.split(".")[1]')"
 if [ "$NODE_MAJOR" -lt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -lt 12 ]; }; then
-  echo "错误: dsh 需要 Node >= 22.12，当前是 $(node -v)。请先执行 pkg upgrade -y && pkg install nodejs 再重跑本脚本。"
+  echo "错误: dsh 需要 Node >= 22.12，当前是 $(node -v)。请先执行 apk upgrade && apk add nodejs npm 再重跑本脚本。"
   exit 1
 fi
 ok "Node $(node -v)"
@@ -103,7 +100,6 @@ fi
 if [ "$CN_MODE" -eq 1 ]; then
   log "使用 npmmirror 镜像源（--cn）"
   npm config set registry https://registry.npmmirror.com --location=user
-  warn "若 pkg 更新源也慢/失败，可运行 termux-change-repo 选择国内镜像"
 fi
 
 # 弱网/慢网健壮性：加大 npm 下载超时与重试，避免一次抖动就失败
@@ -112,36 +108,15 @@ npm config set fetch-retry-mintimeout 20000 --location=user 2>/dev/null || true
 npm config set fetch-retry-maxtimeout 120000 --location=user 2>/dev/null || true
 npm config set fetch-timeout 300000 --location=user 2>/dev/null || true
 
-# ---- 4. node-gyp common.gypi 补丁（android_ndk_path）--------------------------
-log "预下载 Node 头文件并修补 common.gypi"
+# ---- 4. node-gyp common.gypi 补丁（不再需要 Android NDK 路径，但保留兼容）-------
+log "预下载 Node 头文件（如需要）"
 NODE_GYP="$(npm root -g)/npm/node_modules/node-gyp/bin/node-gyp.js"
 if [ -f "$NODE_GYP" ]; then
   node "$NODE_GYP" install || warn "node-gyp 头文件预下载失败（安装过程会自动重试）"
 fi
 
+# Alpine 不需要 android_ndk_path 补丁，但保留函数以备兼容
 patch_common_gypi() {
-  local patched=0
-  local f
-  for f in "$HOME"/.cache/node-gyp/*/include/node/common.gypi; do
-    [ -f "$f" ] || continue
-    if grep -q "android_ndk_path%'" "$f"; then
-      patched=1
-      continue
-    fi
-    python3 - "$f" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read()
-i = s.index("'variables': {") + len("'variables': {")
-s = s[:i] + "\n    'android_ndk_path%': ''," + s[i:]
-open(p, "w").write(s)
-PY
-    ok "已修补 $f"
-    patched=1
-  done
-  if [ "$patched" -eq 0 ]; then
-    warn "未找到 node-gyp 缓存；若安装时 node-pty 报 android_ndk_path，重跑本脚本即可"
-  fi
   return 0
 }
 patch_common_gypi
@@ -156,44 +131,39 @@ if [ "$CN_MODE" -eq 0 ]; then
 fi
 
 log "开始安装 @deepseek-ai/dsh —— 这是最耗时的一步（下载数百个包 + koffi 源码编译，约 5~15 分钟）"
-log "下载阶段可能长时间无输出，属正常；请保持屏幕常亮，不要关闭 Termux"
-export CFLAGS="-target $TARGET"
-export CXXFLAGS="-target $TARGET"
-# 限制编译并行度，避免低内存机型在编译 koffi 时被系统杀掉（OOM）
+log "下载阶段可能长时间无输出，属正常；请不要关闭终端"
 export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 if ! npm install -g --foreground-scripts --no-audit --no-fund @deepseek-ai/dsh; then
-  warn "首次安装失败，修补 common.gypi 后重试一次"
-  patch_common_gypi
+  warn "首次安装失败，重试一次"
   if [ "$CN_MODE" -eq 0 ]; then
     warn "仍失败则自动切换 npmmirror 镜像源再试（中国大陆网络常见）"
     npm config set registry https://registry.npmmirror.com --location=user || true
   fi
   npm install -g --foreground-scripts --no-audit --no-fund @deepseek-ai/dsh
 fi
-unset CFLAGS CXXFLAGS CMAKE_BUILD_PARALLEL_LEVEL
+unset CMAKE_BUILD_PARALLEL_LEVEL
 
-# 硬性检查：npm 装完必须有 dsh 命令，否则立刻报错（而不是最后才暴露）
+# 硬性检查：npm 装完必须有 dsh 命令，否则立刻报错
 if ! command -v dsh >/dev/null 2>&1; then
   echo ""
   echo "✗✗ 错误: npm 安装结束后仍未找到 dsh 命令 ✗✗"
   echo "   说明上面 npm install 实际失败了（常见原因）："
   echo "   1) 网络黑洞/超时：安装阶段长时间（>15分钟）无任何输出 —— 用 --cn 参数重跑，或确认 VPN/代理"
-  echo "   2) 进程被杀：手机内存不足（OOM）或 Termux 被系统回收 —— 关闭后台应用后重跑，装前执行 termux-wake-lock"
-  echo "   3) 磁盘空间不足 —— 检查: df -h \$PREFIX"
+  echo "   2) 进程被杀：内存不足（OOM） —— 关闭后台应用后重跑"
+  echo "   3) 磁盘空间不足 —— 检查: df -h"
   echo "   4) 编译失败 —— 向上翻终端找 \"npm error\" 开头的行，把最后 20 行发到仓库 issue"
   echo "   5) 本脚本幂等，任何一步失败直接重跑即可续上"
   exit 1
 fi
 ok "dsh 命令已就位: $(command -v dsh)"
 
-D="$PREFIX/lib/node_modules/@deepseek-ai/dsh"
+# 定位 dsh 安装目录（npm global prefix 可能不同）
+D="$(npm root -g)/@deepseek-ai/dsh"
 [ -d "$D" ] || { echo "错误: 安装完成后未找到 $D"; exit 1; }
 
-# ---- 5.5 link() -> rename() 补丁（部分定制 ROM 全局禁用 link() 系统调用）---------
+# ---- 5.5 link() -> rename() 补丁（部分系统全局禁用 link() 系统调用）---------
 # 症状：会话保存报 EACCES: permission denied, link '...session.jsonl.zstd.tmp' -> '...'
-# 方案（来自 upstream discussion #248）：把 dsh-session-persistence-jsonl 与
-# dsh-attachment-local 里的原子发布从 link() 改为 rename()（rename 同目录原子且
-# 在所有 ROM 上都可用）。幂等：已修补则跳过。
+# 方案：把 dsh-session-persistence-jsonl 与 dsh-attachment-local 里的原子发布从 link() 改为 rename()
 patch_link_rename() {
   local f patched=0
 
@@ -232,7 +202,6 @@ s = s.replace(
     'import { chmod, link, mkdir, open, readFile, rename, unlink } from "node:fs/promises";',
 )
 s = s.replace("await link(temporary, target);", "await rename(temporary, target);")
-# rename 后 staging 文件已不存在，必须容忍 unlink 的 ENOENT（只改 saveImageFile 内那一处）
 old = "await unlink(temporary);"
 new = ('await unlink(temporary).catch((cleanupError) => {\n'
        '\t\t\tif (!(cleanupError instanceof Error && "code" in cleanupError && cleanupError.code === "ENOENT")) throw cleanupError;\n'
@@ -252,26 +221,23 @@ PY
 }
 patch_link_rename
 
-# ---- 6. sharp WebAssembly 兜底（sharp 无 android-arm64 预编译）-----------------
-SHARP_VER="$(python3 -c "import json;print(json.load(open('$D/node_modules/sharp/package.json'))['version'])")"
+# ---- 6. sharp WebAssembly 兜底（sharp 可能无预编译）--------------------------
+SHARP_VER="$(python3 -c "import json;print(json.load(open('$D/node_modules/sharp/package.json'))['version'])" 2>/dev/null || echo "")"
 if [ -z "$SHARP_VER" ]; then
   fail "读取 sharp 版本失败（$D/node_modules/sharp/package.json 不存在？）"
   exit 1
 fi
 log "安装 sharp@$SHARP_VER 的 WebAssembly 兜底 (@img/sharp-wasm32)"
 
-# 注意：@img/sharp-wasm32 包内没有名为 sharp.node 的文件——顶层 "./sharp.node" 是
-# exports 映射到 index.cjs 的虚拟入口，真实产物是 lib/sharp-wasm32-<ver>.node.{js,wasm}，
-# 所以用「包目录 + lib/*.wasm」判断是否就位。
 wasm_present() { [ -d "$1" ] && ls "$1"/lib/*.wasm >/dev/null 2>&1; }
 
 if wasm_present "$D/node_modules/@img/sharp-wasm32"; then
   ok "@img/sharp-wasm32 已存在，跳过"
 else
-  rm -rf "$SWDIR"                 # 清掉上次失败可能留下的残留（trap 也会兜底清理）
+  rm -rf "$SWDIR"
   mkdir -p "$SWDIR"
   cd "$SWDIR" || { fail "无法进入 $SWDIR"; exit 1; }
-  npm init -y >/dev/null 2>&1 || true   # 失败无所谓，npm install 不需要 package.json
+  npm init -y >/dev/null 2>&1 || true
   log "下载 @img/sharp-wasm32@$SHARP_VER ..."
   if ! npm install --no-save --no-audit --no-fund "@img/sharp-wasm32@$SHARP_VER"; then
     warn "官方源安装失败，改用 npmmirror 重试"
@@ -301,13 +267,20 @@ fi
 
 # ---- 7. dsh 启动包装器（HMR 插件硬要求 --expose-internals）---------------------
 log "安装 dsh 启动包装器（--expose-internals）"
-rm -f "$PREFIX/bin/dsh"
-cat > "$PREFIX/bin/dsh" <<EOF
-#!$PREFIX/bin/sh
+NPM_BIN="$(npm bin -g)"
+rm -f "$NPM_BIN/dsh"
+cat > "$NPM_BIN/dsh" <<EOF
+#!/bin/sh
 exec node --expose-internals $D/lib/bin.js "\$@"
 EOF
-chmod +x "$PREFIX/bin/dsh"
-ok "包装器已写入 $PREFIX/bin/dsh"
+chmod +x "$NPM_BIN/dsh"
+ok "包装器已写入 $NPM_BIN/dsh"
+
+# 确保 npm bin 目录在 PATH 中
+case ":$PATH:" in
+  *":$NPM_BIN:"*) ;;
+  *) export PATH="$NPM_BIN:$PATH" ;;
+esac
 
 # ---- 8. pnpm（dsh plugin 子命令依赖）------------------------------------------
 if ! command -v pnpm >/dev/null 2>&1; then
@@ -315,44 +288,31 @@ if ! command -v pnpm >/dev/null 2>&1; then
   npm install -g --no-audit --no-fund pnpm
 fi
 
-# ---- 8.5 sdcard 存储权限 + 默认工作区（Android 11+ 作用域存储）------------------
-# 网页版无法读 sdcard 通常有两层原因：
-#   1) Termux 应用没有存储权限 -> termux-setup-storage 授权并生成 ~/storage/shared
-#   2) dsh 默认工作区是启动目录 -> 在 cordis.patch.yml 里把 fs-sandbox.cwd
-#      固定到 sdcard，浏览器 UI 的文件树/工作区就直接落在手机存储上
-# 可用环境变量覆盖：DSH_WORKSPACE=/path/to/dir  或  DSH_WORKSPACE="" 跳过此步
-log "配置 sdcard 访问（默认工作区 = ~/storage/shared）"
-if command -v termux-setup-storage >/dev/null 2>&1; then
-  echo "  → 若弹出存储权限对话框，请点击“允许”；Android 11+ 会跳转“所有文件访问”设置页"
-  termux-setup-storage || warn "termux-setup-storage 未完成，请手动授权后重跑本脚本"
-fi
-
-WORKSPACE="${DSH_WORKSPACE:-$HOME/storage/shared}"
+# ---- 8.5 默认工作区配置 ---------------------------------------------------------
+# Alpine 使用标准 Linux 路径，默认工作区设为 ~/dsh-workspace
+log "配置默认工作区"
+WORKSPACE="${DSH_WORKSPACE:-$HOME/dsh-workspace}"
 if [ -n "$WORKSPACE" ]; then
-  if [ -d "$WORKSPACE" ]; then
-    mkdir -p "$HOME/.dsh/profiles/web"
-    PATCH="$HOME/.dsh/profiles/web/cordis.patch.yml"
-    if grep -q "id: fs-sandbox" "$PATCH" 2>/dev/null; then
-      ok "cordis.patch.yml 已含 fs-sandbox 工作区配置"
-    elif [ -s "$PATCH" ] && ! grep -qE '^[[:space:]]*\[\][[:space:]]*$' "$PATCH"; then
-      printf '\n- id: fs-sandbox\n  config:\n    cwd: %s\n' "$WORKSPACE" >> "$PATCH"
-      ok "已追加 fs-sandbox 工作区配置 -> $WORKSPACE"
-    else
-      cat > "$PATCH" <<EOF
-# dsh profile patch layer (generated by android-termux-dsh)
-# 默认工作区固定在 sdcard；如需修改请改下面 cwd，或删除本段恢复默认
+  mkdir -p "$WORKSPACE"
+  mkdir -p "$HOME/.dsh/profiles/web"
+  PATCH="$HOME/.dsh/profiles/web/cordis.patch.yml"
+  if grep -q "id: fs-sandbox" "$PATCH" 2>/dev/null; then
+    ok "cordis.patch.yml 已含 fs-sandbox 工作区配置"
+  elif [ -s "$PATCH" ] && ! grep -qE '^[[:space:]]*\[\][[:space:]]*$' "$PATCH"; then
+    printf '\n- id: fs-sandbox\n  config:\n    cwd: %s\n' "$WORKSPACE" >> "$PATCH"
+    ok "已追加 fs-sandbox 工作区配置 -> $WORKSPACE"
+  else
+    cat > "$PATCH" <<EOF
+# dsh profile patch layer (generated by alpine-dsh)
+# 默认工作区固定在 $WORKSPACE；如需修改请改下面 cwd，或删除本段恢复默认
 - id: fs-sandbox
   config:
     cwd: $WORKSPACE
 EOF
-      ok "已写入默认工作区配置 -> $WORKSPACE"
-    fi
-  else
-    warn "未找到 $WORKSPACE —— sdcard 权限未生效。"
-    warn "请到 系统设置 → 应用 → Termux → 权限，允许“文件和媒体”（Android 11+ 为“所有文件访问”），然后重跑本脚本"
+    ok "已写入默认工作区配置 -> $WORKSPACE"
   fi
 else
-  warn "已跳过 sdcard 工作区配置（DSH_WORKSPACE 为空）"
+  warn "已跳过工作区配置（DSH_WORKSPACE 为空）"
 fi
 
 # ---- 9. 验证 --------------------------------------------------------------------
@@ -375,10 +335,10 @@ if (cd "$D" && node --input-type=module -e "const s=(await import('sharp')).defa
 else
   fail "sharp 无法加载"; FAIL=1
 fi
-if [ -d "$HOME/storage/shared" ]; then
-  ok "sdcard（$HOME/storage/shared）可访问，默认工作区已就绪"
+if [ -d "$WORKSPACE" ]; then
+  ok "工作区（$WORKSPACE）已就绪"
 else
-  warn "sdcard 暂不可访问——运行 dsh web 后如无法读取手机存储，请先执行 termux-setup-storage 并授权"
+  warn "工作区不可访问"
 fi
 
 echo ""
@@ -391,12 +351,11 @@ if [ "$FAIL" -eq 0 ]; then
   echo "   dsh web"
   echo ""
   echo "   然后："
-  echo "   - 手机浏览器打开 http://127.0.0.1:3080"
-  echo "   - 或在 Termux 里执行:  termux-open-url http://127.0.0.1:3080"
-  echo "   - 电脑访问:  dsh web --host 0.0.0.0  然后用 http://手机局域网IP:3080"
+  echo "   - 浏览器打开 http://127.0.0.1:3080"
+  echo "   - 局域网访问: dsh web --host 0.0.0.0  然后用 http://服务器IP:3080"
   echo ""
   echo "   首次使用请在 Web UI 的 设置 → 模型 里配置 LLM API Key。"
-  echo "   默认工作区已固定在 sdcard（~/storage/shared），网页版可直接读写手机存储。"
+  echo "   默认工作区已固定在 $WORKSPACE"
   echo "   注意：重新 npm 安装 dsh 后，需重跑本脚本恢复 sharp 兜底、启动包装器与工作区配置。"
 else
   echo "⚠️ 部分验证未通过，请查看上方 ✗ 项，或到 GitHub 仓库提交 issue。"
